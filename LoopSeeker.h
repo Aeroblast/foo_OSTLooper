@@ -9,7 +9,7 @@
 	void SampleIndexToStr(sampleIndex i, char*str, size_t length);
 	sampleIndex TimeToSampleIndex(int min, int sec, float msec);
 	double SampleIndexToSec(sampleIndex i);
-	int OpenWave(CHAR*path);
+	FILE* OpenWave(CHAR*path);
 	int CloseWave();
 	void DrawWave(HDC hdc, int x, int y, int width, int height, sampleIndex start, sampleIndex end,bool &abort);
 	//int ReadWaveToMemory(CHAR*path);
@@ -53,3 +53,12 @@
 	};
 	//sampleIndex FindBySample(sampleIndex seekStart, sampleIndex seekEnd, sampleIndex seekBase, float sensitivity = 0.2);//已经被替换成了foobar2000的process版本
    #define N_SAMPLE 4096
+
+	struct TestLoopInfo
+	{
+		sampleIndex loopStart, loopEnd;
+		float sec;
+		HWND hWnd;
+		HANDLE proc;
+	};
+	DWORD WINAPI TestLoopPlayback(PVOID p);

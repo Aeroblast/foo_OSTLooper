@@ -5,7 +5,6 @@
 #include "LoopSeeker.h"
 #include "looper.h"
 #include "resource.h"
-
 DECLARE_COMPONENT_VERSION(
 "OST Looper",
 "0.0.1",
@@ -405,7 +404,7 @@ void SetTimeEdit(HWND hDlg, sampleIndex i, int ID)
 
 bool enableLD = false;//初始化完毕后设置为true以允许用户操作
 bool waveDisplay = false;
-
+TestLoopInfo testLoopInfo;
 struct DrawWaveTemp 
 {
 	HDC hTempDC= 0;
@@ -431,6 +430,10 @@ void OnEndDialog()
 		ReleaseDC(hLooperDlg, drawWaveTemp[i].hTempDC);
 		DeleteObject(drawWaveTemp[i].hBitmap);
 	}
+	sliderChanged = false;
+	sampleIndexDisplay = false;
+	enableLD = false;
+	waveDisplay = false;
 	hLooperDlg = 0;
 	hLooperPlayDlg = 0;
 	uDeleteFile(tempFilePath);
@@ -596,7 +599,7 @@ INT_PTR CALLBACK LooperDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPa
 	case WM_COMMAND:
 		if (LOWORD(wParam) == WAV_CONVERTED)//最优先处理
 		{
-			if (OpenWave(tempFilePath) >= 0)
+			if (OpenWave(tempFilePath) > 0)
 			{
 				//读完头部数据就关了
 				CloseWave();
@@ -711,8 +714,15 @@ INT_PTR CALLBACK LooperDialog(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPa
 			CloseWave();
 			return true;
 		}
-
-
+		if (LOWORD(wParam) == IDC_B_TESTLOOP) //V1
+		{
+			testLoopInfo.hWnd = GetDlgItem(hDlg,IDC_T_TESTLOOP);
+			testLoopInfo.loopEnd = e_2_select;
+			testLoopInfo.loopStart = e_1_select;
+			testLoopInfo.sec = 2;
+			OpenWave(tempFilePath);
+			CreateThread(0,0,TestLoopPlayback,&testLoopInfo,0,0);
+		}
 		if (LOWORD(wParam) == IDC_B_SEEK_FADE_OUT)//V2
 		{
 			if (OpenWave(tempFilePath) > 0)
@@ -959,3 +969,5 @@ DWORD WINAPI DrawWaveThread(PVOID p)
 	UpdateWindow(hLooperDlg);
 	return 0;
 }
+
+

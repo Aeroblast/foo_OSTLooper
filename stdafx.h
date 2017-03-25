@@ -2,7 +2,7 @@
 // 或是经常使用但不常更改的
 // 特定于项目的包含文件
 //
-#define RELEASE
+#define DEBUG
 #pragma once
 #pragma warning(disable: 4996)
 #include "targetver.h"

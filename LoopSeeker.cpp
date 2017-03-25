@@ -1,9 +1,8 @@
 #include "stdafx.h"
 #include "LoopSeeker.h"
-
+#include<dsound.h>
 //这一揽子函数本意是想把算那些玩意的步骤和外部交互(包括与用户和与fb2k)隔开，不过好像变得很麻烦？？？
 //TODO：检查与foobar的utf8系统兼容性
-
 
 	WAVEFORMATEX waveFormat;
 	FILE* waveFile = 0;
@@ -132,22 +131,23 @@
 	{
 		return i / (double)waveFormat.nSamplesPerSec;
 	}
-	int OpenWave(CHAR*path)
+	FILE* OpenWave(CHAR*path)
 	{
+		if (waveFile)return waveFile;
 		FILE*fp = 0;
 		fopen_s(&fp, path, "rb");
-		if (!fp)return -1;
+		if (!fp)return 0;
 		INT32 temp4B;
 		fread_s(&temp4B, 4, 4, 1, fp);//'RIFF'
-		if (temp4B != 0x46464952) { fclose(fp); return -2; }
+		if (temp4B != 0x46464952) { fclose(fp); return 0; }
 
 		fread_s(&fileSize, 4, 4, 1, fp);//FileSize - 8
 
 		fread_s(&temp4B, 4, 4, 1, fp);//'WAVE'
-		if (temp4B != 0x45564157) { fclose(fp); return -2; }
+		if (temp4B != 0x45564157) { fclose(fp); return 0; }
 
 		fread_s(&temp4B, 4, 4, 1, fp);//'fmt '
-		if (temp4B != 0x20746D66) { fclose(fp); return -2; }
+		if (temp4B != 0x20746D66) { fclose(fp); return 0; }
 
 		fread_s(&temp4B, 4, 4, 1, fp);//size of head
 		if (temp4B == 0x10)
@@ -161,19 +161,24 @@
 		}
 		else 
 		{
-			fclose(fp); return -2;
+			fclose(fp); return 0;
 		}
 		fread_s(&temp4B, 4, 4, 1, fp);//'data'
-		if (temp4B != 0x61746164) { fclose(fp); return -2; }
+		if (temp4B != 0x61746164) { fclose(fp); return 0; }
 		fread_s(&pcmSize, 4, 4, 1, fp);
 		pcmStart = ftell(fp);
 		waveFile = fp;
-		return 1;
+		return waveFile;
 	}
     int CloseWave() 
 	{
-		return fclose(waveFile);
+		int r=fclose(waveFile);
+		waveFile = 0;
+		return r;
 	}
+
+
+
 	/*
 	int ReadWaveToMemory(CHAR*path)//比较费事
 	{
@@ -280,6 +285,7 @@
 					averSample /= 10;
 					real c = averSample - sample[i];
 					if (c < 0)c = -c;
+					//c /= sample[i];//使用相对差距效果并不理想，为啥？
 					//	if(i>100)printf("  %5d  %lf\n",i,c);
 					if (c > sensitivity) { break; }
 					if (i == groupSize - 1) { goto P_F; }
@@ -438,7 +444,114 @@
 		}
 	}
 
+	DWORD WINAPI TestLoopPlayback(PVOID p)
+	{
+		TestLoopInfo *info = (TestLoopInfo*)p;
+#define MAX_AUDIO_BUF 4   
+#define BUFFERNOTIFYSIZE 44100   
+		int i;
+		if (!waveFile)return -1;
+		FILE * fp = waveFile;
+		fseek(fp, pcmStart, SEEK_SET);
+		IDirectSound8 *m_pDS = NULL;
+		IDirectSoundBuffer8 *m_pDSBuffer8 = NULL;
+		IDirectSoundBuffer *m_pDSBuffer = NULL;
+		IDirectSoundNotify8 *m_pDSNotify = NULL;
+		DSBPOSITIONNOTIFY m_pDSPosNotify[MAX_AUDIO_BUF];
+		HANDLE m_event[MAX_AUDIO_BUF];
+		DWORD waitmsec = BUFFERNOTIFYSIZE * 1000 / waveFormat.nAvgBytesPerSec;
+		if (FAILED(DirectSoundCreate8(NULL, &m_pDS, NULL)))
+			return FALSE;
+		if (FAILED(m_pDS->SetCooperativeLevel(info->hWnd, DSSCL_NORMAL)))
+			return FALSE;
 
+
+		DSBUFFERDESC dsbd;
+		memset(&dsbd, 0, sizeof(dsbd));
+		dsbd.dwSize = sizeof(dsbd);
+		dsbd.dwFlags = DSBCAPS_GLOBALFOCUS | DSBCAPS_CTRLPOSITIONNOTIFY | DSBCAPS_GETCURRENTPOSITION2;
+		dsbd.dwBufferBytes = MAX_AUDIO_BUF*BUFFERNOTIFYSIZE;
+		dsbd.lpwfxFormat = &waveFormat;
+
+		if (FAILED(m_pDS->CreateSoundBuffer(&dsbd, &m_pDSBuffer, NULL))) {
+			return FALSE;
+		}
+		if (FAILED(m_pDSBuffer->QueryInterface(IID_IDirectSoundBuffer8, (LPVOID*)&m_pDSBuffer8))) {
+			return FALSE;
+		}
+		//Get IDirectSoundNotify8  
+		if (FAILED(m_pDSBuffer8->QueryInterface(IID_IDirectSoundNotify, (LPVOID*)&m_pDSNotify))) {
+			return FALSE;
+		}
+		for (i = 0; i<MAX_AUDIO_BUF; i++) {
+			m_pDSPosNotify[i].dwOffset = i*BUFFERNOTIFYSIZE;
+			m_event[i] = ::CreateEvent(NULL, false, false, NULL);
+			m_pDSPosNotify[i].hEventNotify = m_event[i];
+		}
+		m_pDSNotify->SetNotificationPositions(MAX_AUDIO_BUF, m_pDSPosNotify);
+		m_pDSNotify->Release();
+
+		//Start Playing  
+		BOOL isPlaying = TRUE;
+		LPVOID buf = NULL;
+		DWORD  buf_len = 0;
+		DWORD res = WAIT_OBJECT_0;
+		DWORD offset = BUFFERNOTIFYSIZE;
+		int r=fseek(fp, pcmStart + info->loopEnd*waveFormat.nBlockAlign - (int)(info->sec*waveFormat.nAvgBytesPerSec), SEEK_SET);
+		if (r < 0)return -1;
+		m_pDSBuffer8->SetCurrentPosition(0);
+		m_pDSBuffer8->Play(0, 0, DSBPLAY_LOOPING);
+		bool looped = false;
+		WCHAR infoText[10] = {0};
+		//Loop  
+		while (isPlaying) {
+			if ((res >= WAIT_OBJECT_0) && (res <= WAIT_OBJECT_0 + 3)) {
+				m_pDSBuffer8->Lock(offset, BUFFERNOTIFYSIZE, &buf, &buf_len, NULL, NULL, 0);
+				//if (BUFFERNOTIFYSIZE != buf_len) { MessageBox(0, 0, 0, 0); }
+				if (looped) 
+				{
+					fread(buf, 1, buf_len, fp);
+					long count = info->loopStart+(int)(info->sec*waveFormat.nAvgBytesPerSec) - (ftell(fp) + buf_len - pcmStart) / waveFormat.nBlockAlign;
+					if (count < 0)break;
+				}
+				else
+				{
+					long loopCount = info->loopEnd - (ftell(fp) + buf_len - pcmStart) / waveFormat.nBlockAlign;
+					if (loopCount < 0)
+					{
+						size_t written = fread(buf, 1, buf_len + loopCount*waveFormat.nBlockAlign, fp);
+						fseek(fp, pcmStart + info->loopStart*waveFormat.nBlockAlign, SEEK_SET);
+						written += fread(((char*)buf) + written, 1, -loopCount*waveFormat.nBlockAlign, fp);
+						looped = true;
+						wcscpy_s(infoText,L"已跳转");
+						SetWindowTextW(info->hWnd, infoText);
+					}
+					else
+					{
+						float sec = loopCount / (float)waveFormat.nSamplesPerSec;
+						_stprintf_s(infoText,_T("%.1f"),sec);
+						SetWindowTextW(info->hWnd, infoText);
+						fread(buf, 1, buf_len, fp);
+					}
+				}
+
+				m_pDSBuffer8->Unlock(buf, buf_len, NULL, 0);
+				offset += buf_len;
+				offset %= (BUFFERNOTIFYSIZE * MAX_AUDIO_BUF);
+				//			printf("this is %7d of buffer\n", offset);
+			}
+			res = WaitForMultipleObjects(MAX_AUDIO_BUF, m_event, FALSE, waitmsec);
+			if (WAIT_TIMEOUT == res)
+			{
+				//res=1;
+			}
+		}
+		m_pDSBuffer8->Release();
+		m_pDSBuffer->Release();
+		m_pDS->Release();
+		CloseWave();
+		return 0;
+	}
 	/*已经被替换成了foobar2000的process版本
 		sampleIndex FindBySample(sampleIndex seekStart, sampleIndex seekEnd, sampleIndex seekBase, float sensitivity)
 	{
